@@ -4,6 +4,7 @@
  */
 import { z } from 'zod';
 import type { GetAccountResponse } from './protocol/v2/GetAccountResponse';
+import type { ThreadStartResponse } from './protocol/v2/ThreadStartResponse';
 import type { CredentialStatus, ProviderDiagnostics } from '@archon/provider-contract';
 import {
   collectCredentialValues,
@@ -75,6 +76,10 @@ const accountResponseSchema = z.object({
   account: z.object({}).nullable(),
   requiresOpenaiAuth: z.boolean(),
 }) satisfies z.ZodType<Pick<GetAccountResponse, 'requiresOpenaiAuth'>>;
+
+const threadModelSchema = z.object({
+  model: z.string().trim().min(1),
+}) satisfies z.ZodType<Pick<ThreadStartResponse, 'model'>>;
 
 type CodexConfig = Record<string, JsonValue>;
 
@@ -582,6 +587,9 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
     : await connection.request('thread/start', { cwd: request.cwd, ...threadParams });
   const threadId = idAt(threadResponse, 'thread');
   if (!threadId) throw new Error('Codex app-server returned a thread without an id');
+  // This turn inherits the app-server's effective thread model unless it reports a reroute.
+  // A missing observation must never use request.model.
+  let observedModel = threadModelSchema.safeParse(threadResponse);
   request.onThread(threadId);
   if (declared) await checkThreadMcpScope(connection, threadId, declared);
   getLog().debug(
@@ -620,6 +628,16 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
 
   for await (const notification of connection.notifications()) {
     switch (notification.method) {
+      case 'model/rerouted':
+        if (
+          !parentCompleted &&
+          notification.params.threadId === threadId &&
+          notification.params.turnId === turnId
+        ) {
+          observedModel = threadModelSchema.safeParse({ model: notification.params.toModel });
+        }
+        break;
+
       case 'account/rateLimits/updated':
         rateLimits = notification.params.rateLimits;
         break;
@@ -709,6 +727,7 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
         parentCompleted = true;
         for (const chunk of completeTurn(turn.status, turn.error, request, {
           threadId,
+          model: observedModel.success ? observedModel.data.model : undefined,
           usage: usageSpan && turnUsageOf(usageSpan.first, usageSpan.end),
           rateLimits,
           lastAgentMessage,
@@ -741,6 +760,7 @@ function* completeTurn(
   request: TurnRequest,
   state: {
     threadId: string;
+    model: string | undefined;
     usage: TokenUsage | undefined;
     rateLimits: RateLimitSnapshot | undefined;
     lastAgentMessage: string;
@@ -749,6 +769,7 @@ function* completeTurn(
   let result: ResultChunk;
   if (status === 'completed') {
     result = { type: 'result' };
+    if (state.model) result.resolvedModel = { id: state.model };
     if (request.hasOutputFormat && state.lastAgentMessage) {
       // Codex returns structured output as the final message's text. Parse it onto
       // structuredOutput so the dag-executor handles all providers uniformly.

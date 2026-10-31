@@ -78,7 +78,7 @@ that this work has ended.
 | Token reporting | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Stop reason reporting | ✅ | ❌ | ✅ | ✅ | ❌ |
 | Turn count reporting | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Resolved model reporting | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Resolved model reporting | ✅ | ✅ | ✅ | ✅ | ❌ |
 | Effort control (`effort`) | ✅ | ✅ | ❌ | ✅ | ✅ |
 | Fallback model (`fallbackModel`) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Sandbox (`sandbox`) | ✅ | ❌ | ❌ | ❌ | ❌ |

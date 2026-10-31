@@ -44,6 +44,8 @@ type CommandExecution = Extract<ThreadItem, { type: 'commandExecution' }>;
 type McpToolCall = Extract<ThreadItem, { type: 'mcpToolCall' }>;
 
 export interface FakeTurnScript {
+  /** Override the server's model acknowledgement, including malformed/older-server responses. */
+  threadModel?: unknown;
   account?: GetAccountResponse['account'];
   /** `requiresOpenaiAuth` in the default `account/read` answer (default true). */
   requiresOpenaiAuth?: boolean;
@@ -196,6 +198,10 @@ export function createFakeAppServer(script: () => FakeTurnScript = () => ({})): 
     // Like the real server, nothing but `initialize` is served before the client
     // acknowledges with the `initialized` notification.
     let initialized = false;
+    const observedThread = (response: ThreadStartResponse): unknown => ({
+      ...response,
+      ...('threadModel' in turn ? { model: turn.threadModel } : {}),
+    });
     let buffered = '';
     stdin.on('data', (chunk: Buffer) => {
       buffered += chunk.toString();
@@ -229,18 +235,23 @@ export function createFakeAppServer(script: () => FakeTurnScript = () => ({})): 
             if (!turn.ignoreInitialize) send({ id, result: initializeResponse() });
             break;
           case 'thread/start':
-            send({ id, result: threadStartResponse(THREAD_ID) });
+            send({ id, result: observedThread(threadStartResponse(THREAD_ID)) });
             break;
           case 'thread/resume':
             send({
               id,
-              result: threadResumeResponse((message.params as { threadId: string }).threadId),
+              result: observedThread(
+                threadResumeResponse((message.params as { threadId: string }).threadId)
+              ),
             });
             break;
           case 'thread/fork': {
             forks += 1;
             const source = (message.params as { threadId: string }).threadId;
-            send({ id, result: threadForkResponse(`${source}-fork-${String(forks)}`, source) });
+            send({
+              id,
+              result: observedThread(threadForkResponse(`${source}-fork-${String(forks)}`, source)),
+            });
             break;
           }
           case 'turn/start':
