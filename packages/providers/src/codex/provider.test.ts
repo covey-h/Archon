@@ -186,13 +186,115 @@ describe('CodexProvider', () => {
       tokenReporting: true,
       stopReasonReporting: false,
       turnCountReporting: false,
-      resolvedModelReporting: false,
+      resolvedModelReporting: true,
       effortControl: true,
       fallbackModel: false,
       sandbox: false,
       settingSources: false,
       nativeTools: false,
       containerExec: false,
+    });
+  });
+
+  describe('observed model', () => {
+    test.each(['start', 'resume', 'fork'] as const)(
+      'reports the app-server model on %s, not the requested alias',
+      async mode => {
+        const { provider, server } = providerWith({ threadModel: 'server-model' });
+        const chunks = await run(
+          provider,
+          { model: 'requested-alias', forkSession: mode === 'fork' },
+          mode === 'start' ? undefined : 'existing-thread'
+        );
+        expect(resultOf(chunks).resolvedModel).toEqual({ id: 'server-model' });
+        expect(paramsOf(server, `thread/${mode}`)?.model).toBe('requested-alias');
+      }
+    );
+
+    test('reports the server-selected default when the caller supplied no model', async () => {
+      const { provider, server } = providerWith({ threadModel: 'server-default' });
+      expect(resultOf(await run(provider)).resolvedModel).toEqual({ id: 'server-default' });
+      expect(paramsOf(server, 'thread/start')?.model).toBeUndefined();
+    });
+
+    test('reports a model rerouted by the server for this turn', async () => {
+      const { provider } = providerWith({
+        threadModel: 'initial-model',
+        notifications: [
+          {
+            method: 'model/rerouted',
+            params: {
+              threadId: THREAD_ID,
+              turnId: TURN_ID,
+              fromModel: 'initial-model',
+              toModel: 'served-model',
+              reason: 'highRiskCyberActivity',
+            },
+          },
+        ],
+      });
+      expect(resultOf(await run(provider, { model: 'requested-alias' })).resolvedModel).toEqual({
+        id: 'served-model',
+      });
+    });
+
+    test.each(['thread', 'turn'])('ignores a reroute for another %s', async identity => {
+      const { provider } = providerWith({
+        threadModel: 'this-model',
+        notifications: [
+          {
+            method: 'model/rerouted',
+            params: {
+              threadId: identity === 'thread' ? 'other-thread' : THREAD_ID,
+              turnId: identity === 'turn' ? 'other-turn' : TURN_ID,
+              fromModel: 'this-model',
+              toModel: 'other-model',
+              reason: 'highRiskCyberActivity',
+            },
+          },
+        ],
+      });
+      expect(resultOf(await run(provider)).resolvedModel).toEqual({ id: 'this-model' });
+    });
+
+    test('does not reuse the old model after an invalid reroute observation', async () => {
+      const { provider } = providerWith({
+        threadModel: 'initial-model',
+        notifications: [
+          {
+            method: 'model/rerouted',
+            params: {
+              threadId: THREAD_ID,
+              turnId: TURN_ID,
+              fromModel: 'initial-model',
+              toModel: '',
+              reason: 'highRiskCyberActivity',
+            },
+          },
+        ],
+      });
+      expect(resultOf(await run(provider)).resolvedModel).toBeUndefined();
+    });
+
+    test.each([undefined, '', '   ', 42])(
+      'leaves a missing or invalid server model unavailable (%s)',
+      async model => {
+        const { provider } = providerWith({ threadModel: model });
+        expect(
+          resultOf(await run(provider, { model: 'requested-alias' })).resolvedModel
+        ).toBeUndefined();
+      }
+    );
+
+    test('does not claim a served model when the turn failed', async () => {
+      const { provider } = providerWith({
+        threadModel: 'server-model',
+        completion: {
+          status: 'failed',
+          error: turnError('other', 'model refused'),
+        },
+      });
+      expect(resultOf(await run(provider)).resolvedModel).toBeUndefined();
     });
   });
 
@@ -422,6 +524,7 @@ describe('CodexProvider', () => {
         {
           type: 'result',
           sessionId: THREAD_ID,
+          resolvedModel: { id: 'gpt-fake' },
           tokens: { input: 120, output: 7, cacheRead: 100, cacheWrite: 3 },
         },
       ]);
@@ -858,7 +961,7 @@ describe('CodexProvider', () => {
       });
       expect(chunks).toEqual([
         { type: 'agent_thought_chunk', text: 'first\n\nsecond' },
-        { type: 'result', sessionId: THREAD_ID },
+        { type: 'result', sessionId: THREAD_ID, resolvedModel: { id: 'gpt-fake' } },
       ]);
     });
   });
@@ -1284,7 +1387,11 @@ describe('CodexProvider', () => {
       const chunks = await streamOf({
         notifications: [errorNotification('Reconnecting... 1/5', true), agentMessage('done')],
       });
-      expect(resultOf(chunks)).toEqual({ type: 'result', sessionId: THREAD_ID });
+      expect(resultOf(chunks)).toEqual({
+        type: 'result',
+        sessionId: THREAD_ID,
+        resolvedModel: { id: 'gpt-fake' },
+      });
     });
 
     test('each retry Codex announces is a warning with its cause and no vendor text', async () => {
@@ -1323,7 +1430,7 @@ describe('CodexProvider', () => {
       });
       expect(chunks).toEqual([
         { type: 'agent_message_chunk', text: 'done' },
-        { type: 'result', sessionId: THREAD_ID },
+        { type: 'result', sessionId: THREAD_ID, resolvedModel: { id: 'gpt-fake' } },
       ]);
     });
 
